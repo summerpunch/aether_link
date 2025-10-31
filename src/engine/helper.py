@@ -14,7 +14,6 @@ def extract_variables_from_state(variables: list[VariableEntity],
     """从状态中提取变量映射值信息"""
     # 1.构建变量字典信息
     variables_dict = {}
-
     # 2.循环遍历输入变量实体
     for variable in variables:
         # 3.获取数据变量类型
@@ -28,6 +27,16 @@ def extract_variables_from_state(variables: list[VariableEntity],
             for node_result in state["node_results"]:
                 if node_result.node_data.id == variable.value.content.ref_node_id:
                     # 6.提取数据并完成数据强制转换
+                    if node_result.outputs:
+                        output = node_result.outputs.get(
+                            variable.value.content.ref_var_name,
+                            VARIABLE_TYPE_DEFAULT_VALUE_MAP.get(variable.type)
+                        )
+                        if output and isinstance(output, dict):
+                            messages = output.get("messages")
+                            if messages:
+                                variables_dict[variable.name] = variable_type_cls(messages[0].content)
+                                continue
                     variables_dict[variable.name] = variable_type_cls(node_result.outputs.get(
                         variable.value.content.ref_var_name,
                         VARIABLE_TYPE_DEFAULT_VALUE_MAP.get(variable.type)

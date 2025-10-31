@@ -2,6 +2,7 @@ import json
 import time
 from typing import Optional, Any
 
+from langgraph.types import Command
 from pydantic import PrivateAttr
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -12,7 +13,7 @@ from src.engine.workflow.nodes.base_node import BaseNode
 from src.engine.helper import extract_variables_from_state
 from src.core.exception.exception import FailException, NotFoundException
 from src.engine.workflow.nodes.tool.tool_entity import ToolNodeData
-from src.store.model import ApiTool
+from src.store.model import ApiTool, ApiToolProvider
 
 
 class ToolNode(BaseNode):
@@ -24,7 +25,6 @@ class ToolNode(BaseNode):
         """构造函数，完成对内置工具的初始化"""
         # 1.调用父类构造函数完成数据初始化
         super().__init__(*args, **kwargs)
-
         # 2.导入依赖注入及工具提供者
         from src.core.di_config import injector
         # 3.判断是内置插件还是API插件，执行不同的操作
@@ -41,7 +41,6 @@ class ToolNode(BaseNode):
         else:
             # 5.API插件，调用数据库查询记录并创建API插件
             from src.store.database_manager import DatabaseManager
-            from src.core.di_config import injector
             db = injector.get(DatabaseManager)
 
             # 6.根据传递的提供者名字+工具名字查询工具
@@ -51,6 +50,12 @@ class ToolNode(BaseNode):
             ).one_or_none()
             if not api_tool:
                 raise NotFoundException("该API扩展插件不存在，请核实重试")
+
+            # @property
+            # def provider(self) -> "ApiToolProvider":
+            #     """只读属性，返回当前工具关联/归属的工具提供者信息"""
+            #     return self.session.query(ApiToolProvider).get(self.provider_id)
+            tool_provider = db.session.query(ApiToolProvider).get(api_tool.provider_id)
 
             # 7.导入API插件提供者
             from src.engine.tools.api.providers import ApiProviderManager
@@ -63,11 +68,11 @@ class ToolNode(BaseNode):
                 url=api_tool.url,
                 method=api_tool.method,
                 description=api_tool.description,
-                headers=api_tool.provider.headers,
+                headers=tool_provider.headers,
                 parameters=api_tool.parameters,
             ))
 
-    def invoke(self, state: WorkflowState, config: Optional[RunnableConfig] = None) -> WorkflowState:
+    def invoke(self, state: WorkflowState, config: Optional[RunnableConfig] = None) -> Command:
         """扩展插件执行节点，根据传递的信息调用预设的插件，涵盖内置插件及API插件"""
         # 1.提取节点中的输入数据
         start_at = time.perf_counter()
@@ -91,14 +96,36 @@ class ToolNode(BaseNode):
             outputs["text"] = result
 
         # 5.构建响应状态并返回
-        return {
-            "node_results": [
-                NodeResult(
-                    node_data=self.node_data,
-                    status=NodeStatus.SUCCEEDED,
-                    inputs=inputs_dict,
-                    outputs=outputs,
-                    latency=(time.perf_counter() - start_at),
-                )
-            ]
-        }
+        # state["node_results"] = [NodeResult(
+        #             node_data=self.node_data,
+        #             status=NodeStatus.SUCCEEDED,
+        #             inputs=inputs_dict,
+        #             outputs=outputs,
+        #             latency=(time.perf_counter() - start_at),
+        #         )]
+        # return state
+
+        return Command(
+            update={
+                "node_results": [
+                    NodeResult(
+                        node_data=self.node_data,
+                        status=NodeStatus.SUCCEEDED,
+                        inputs=inputs_dict,
+                        outputs=outputs,
+                        latency=(time.perf_counter() - start_at),
+                    )
+                ]}
+        )
+
+        # return {
+        #     "node_results": [
+        #         NodeResult(
+        #             node_data=self.node_data,
+        #             status=NodeStatus.SUCCEEDED,
+        #             inputs=inputs_dict,
+        #             outputs=outputs,
+        #             latency=(time.perf_counter() - start_at),
+        #         )
+        #     ]
+        # }

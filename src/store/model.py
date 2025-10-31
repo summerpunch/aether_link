@@ -7,8 +7,6 @@ from decimal import Decimal
 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import make_transient
-from src.engine.conversation_entity import InvokeFrom
 from typing import Dict, Any, TypeVar
 from sqlalchemy import (
     Column,
@@ -45,6 +43,7 @@ class SerializableMixin:
                 result[column.name] = value
         return result
 
+
 class App(Base, SerializableMixin):
     """AI应用基础模型类"""
     __tablename__ = "app"
@@ -60,38 +59,6 @@ class App(Base, SerializableMixin):
     status = Column(String(255), nullable=False, server_default=text("''::character varying"))  # 应用状态
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    @property
-    def debug_conversation(self) -> "Conversation":
-        """获取应用的调试会话记录"""
-        # 1.根据debug_conversation_id获取调试会话记录
-        debug_conversation = None
-        from src.store.database_manager import _database_manager
-        if self.debug_conversation_id is not None:
-            debug_conversation = _database_manager.session.query(Conversation).filter(
-                Conversation.id == self.debug_conversation_id,
-                Conversation.invoke_from == InvokeFrom.DEBUGGER,
-            ).one_or_none()
-
-        # 2.检测数据是否存在，如果不存在则创建
-        if not self.debug_conversation_id or not debug_conversation:
-            # 3.开启数据库自动提交上下文
-            with _database_manager.auto_commit():
-                # 4.创建应用调试会话记录并刷新获取会话id
-                debug_conversation = Conversation(
-                    app_id=self.id,
-                    name="New Conversation",
-                    invoke_from=InvokeFrom.DEBUGGER,
-                    created_by=self.account_id,
-                )
-                _database_manager.session.add(debug_conversation)
-                _database_manager.session.flush()
-                _database_manager.session.expunge(debug_conversation)
-
-                # 5.更新当前记录的debug_conversation_id
-                self.debug_conversation_id = debug_conversation.id
-
-        return debug_conversation
 
 
 class AppConfig(Base, SerializableMixin):

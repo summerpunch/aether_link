@@ -1,6 +1,6 @@
 import time
 from typing import Optional
-
+from langgraph.types import Command
 from langchain_core.runnables import RunnableConfig
 from src.enums.workflow_enum import NodeStatus
 from src.engine.workflow.node_entity import NodeResult
@@ -16,12 +16,11 @@ class StartNode(BaseNode):
     node_data: StartNodeData
 
     def invoke(self, state: WorkflowState,
-               config: Optional[RunnableConfig] = None) -> WorkflowState:
+               config: Optional[RunnableConfig] = None) -> Command:
         """开始节点执行函数，该函数会提取状态中的输入信息并生成节点结果"""
         # 1.提取节点数据中的输入数据
         start_at = time.perf_counter()
         inputs = self.node_data.inputs
-
         # 2.循环遍历输入数据，并提取需要的数据，同时检测必填的数据是否传递，如果未传递则直接报错
         outputs = {}
         for input in inputs:
@@ -38,14 +37,15 @@ class StartNode(BaseNode):
             outputs[input.name] = input_value
 
         # 5.构建状态数据并返回
-        return {
-            "node_results": [
-                NodeResult(
-                    node_data=self.node_data,
-                    status=NodeStatus.SUCCEEDED,
-                    inputs=state["inputs"],
-                    outputs=outputs,
-                    latency=(time.perf_counter() - start_at),
-                )
-            ]
-        }
+        return Command(
+            update={
+                "node_results": [
+                    NodeResult(
+                        node_data=self.node_data,
+                        status=NodeStatus.SUCCEEDED,
+                        inputs=state["inputs"],
+                        outputs=outputs,
+                        latency=(time.perf_counter() - start_at),
+                    )
+                ]}
+        )

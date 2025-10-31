@@ -36,10 +36,19 @@ async def draft_graph(workflow_id: str):
     return await ApiResult.success(workflow_service.get_draft_graph(workflow_id, "system"))
 
 
+from sse_starlette.sse import EventSourceResponse
+
+
 @router.post("/{workflow_id}/debug")
 async def debug(workflow_id: str, req: AllRequest):
-    response = injector.get(WorkflowService).debug_workflow(workflow_id, req.dict(), "system")
-    return ApiResult.compact_generate_response(response)
+    async def event_generator():
+        async for event_data in injector.get(WorkflowService).debug_workflow(
+                workflow_id, req.dict(), "system"):
+            yield event_data
+
+    return EventSourceResponse(event_generator(),
+                               media_type="text/event-stream",
+                               sep="\n")
 
 
 @router.post("/update")
@@ -87,13 +96,15 @@ async def get_draft_graph():
     }
 
 
-@router.post("/debug")
-async def debug():
-    return {
-        "status": "healthy",
-        "version": "0.1.0",
-        "service": "aether link api"
-    }
+#
+#
+# @router.post("/debug")
+# async def debug():
+#     return {
+#         "status": "healthy",
+#         "version": "0.1.0",
+#         "service": "aether link api"
+#     }
 
 
 @router.post("/publish")

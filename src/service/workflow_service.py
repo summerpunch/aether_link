@@ -1,9 +1,6 @@
-from typing import Any, Optional
-
+from typing import Any, Optional, AsyncGenerator
 from dotenv import load_dotenv
 import time
-import json
-import uuid
 import logging
 from src.core.exception.exception import ValidateErrorException, NotFoundException, ForbiddenException
 from src.engine.tools.builtin.provider_manager import BuiltinProviderManager
@@ -17,8 +14,6 @@ from src.schema.workflow_schema import CreateWorkflowReq
 from src.store.model import Workflow, ApiTool, WorkflowResult
 from src.lib.helper import convert_model_to_dict
 from src.engine.workflow.node_entity import NodeType, BaseNodeData
-
-from typing import Any, Generator
 
 load_dotenv()
 
@@ -37,8 +32,8 @@ class WorkflowService(BaseService):
     database_manager: DatabaseManager
     builtin_provider_manager: BuiltinProviderManager
 
-    def debug_workflow(self, workflow_id: str, inputs: dict[str, Any], account: str) -> Generator:
-        """调试指定的工作流API接口，该接口为流式事件输出"""
+    async def debug_workflow(self, workflow_id: str, inputs: dict[str, Any], account: str) -> AsyncGenerator:
+        """调试指定的工作流API接口，该接口为流式事件输出（异步版本）"""
         # 1.根据传递的id获取工作流并校验权限
         workflow = self.get_workflow(workflow_id, account)
 
@@ -51,57 +46,21 @@ class WorkflowService(BaseService):
             edges=workflow.draft_graph.get("edges", []),
         ))
 
-        def handle_stream() -> Generator:
-            # 3.定义变量存储所有节点运行结果
-            node_results = []
+        # 3.定义变量存储所有节点运行结果
+        node_results = []
 
-            # 4.添加数据库工作流运行结果记录
-            workflow_result = self.create(WorkflowResult, **{
-                "app_id": None,
-                "account_id": account,
-                "workflow_id": workflow.id,
-                "graph": workflow.draft_graph,
-                "state": [],
-                "latency": 0,
-                "status": WorkflowResultStatus.RUNNING,
-            })
-
-            # 4.调用stream服务获取工具信息
-            start_at = time.perf_counter()
-            try:
-                for chunk in workflow_tool.stream(inputs):
-                    # 5.chunk的格式为:{"node_name": WorkflowState}，所以需要取出节点响应结构的第1个key
-                    first_key = next(iter(chunk))
-
-                    # 6.取出各个节点的运行结果
-                    node_result = chunk[first_key]["node_results"][0]
-                    node_result_dict = convert_model_to_dict(node_result)
-                    node_results.append(node_result_dict)
-
-                    # 7.组装响应数据并流式事件输出
-                    data = {
-                        "id": str(uuid.uuid4()),
-                        **node_result_dict,
-                    }
-                    yield f"event: workflow\ndata: {json.dumps(data)}\n\n"
-
-                # 7.流式输出完毕后，将结果存储到数据库中
-                self.update(workflow_result, **{
-                    "status": WorkflowResultStatus.SUCCEEDED,
-                    "state": node_results,
-                    "latency": (time.perf_counter() - start_at),
-                })
-                self.update(workflow, **{
-                    "is_debug_passed": True,
-                })
-            except Exception:
-                self.update(workflow_result, **{
-                    "status": WorkflowResultStatus.FAILED,
-                    "state": node_results,
-                    "latency": (time.perf_counter() - start_at)
-                })
-
-        return handle_stream()
+        # 4.添加数据库工作流运行结果记录
+        workflow_result = self.create(WorkflowResult, **{
+            "app_id": None,
+            "account_id": account,
+            "workflow_id": workflow.id,
+            "graph": workflow.draft_graph,
+            "state": [],
+            "latency": 0,
+            "status": WorkflowResultStatus.RUNNING,
+        })
+        async for chunk in workflow_tool.stream_events(inputs):
+            yield chunk
 
     def get_workflow(self, workflow_id: str, account: str) -> Workflow:
         """根据传递的工作流id，获取指定的工作流基础信息"""

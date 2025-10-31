@@ -11,6 +11,7 @@ from src.engine.app_entity import DEFAULT_APP_CONFIG
 class LLMNodeData(BaseNodeData):
     """大语言模型节点数据"""
     prompt: str
+    tools: str = "ss"
     language_model_config: dict[str, Any] = Field(
         alias="model_config",
         default_factory=lambda: DEFAULT_APP_CONFIG["model_config"],

@@ -1,4 +1,4 @@
-from typing import Any, Optional, Iterator
+from typing import Any, Optional, Iterator, AsyncIterator
 
 from pydantic import PrivateAttr, BaseModel, Field, create_model
 from langchain_core.runnables import RunnableConfig
@@ -146,5 +146,33 @@ class Workflow(BaseTool):
             config: Optional[RunnableConfig] = None,
             **kwargs: Optional[Any],
     ) -> Iterator[Output]:
-        """工作流流式输出每个节点对应的结果"""
+        """工作流流式输出每个节点对应的结果（同步版本）"""
         return self._workflow.stream({"inputs": input})
+
+    async def astream(
+            self,
+            input: Input,
+            config: Optional[RunnableConfig] = None,
+            **kwargs: Optional[Any],
+    ) -> AsyncIterator[Output]:
+        """工作流流式输出每个节点对应的结果（异步版本）"""
+        async for chunk in self._workflow.astream({"inputs": input}, config=config):
+            yield chunk
+
+    async def stream_events(
+            self,
+            input: Input,
+            config: Optional[RunnableConfig] = None,
+            **kwargs: Optional[Any],
+    ):
+        """工作流流式输出每个节点对应的事件（异步版本，使用 astream_events）"""
+        # 使用 astream_events v2 版本来获取详细的事件流
+        from src.engine.workflow import event_process
+        async for event in self._workflow.astream_events(
+                {"inputs": input},
+                config=config,
+        ):
+            process_list = await event_process.execute(event)
+            if process_list:
+                for process in process_list:
+                    yield process
