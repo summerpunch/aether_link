@@ -121,7 +121,7 @@ class AgentConfig(BaseModel):
 
 class AgentState(MessagesState):
     """智能体状态类"""
-    task_id: UUID  # 该次状态对应的任务id，每次运行时会使用独立的任务id
+    task_id: str  # 该次状态对应的任务id，每次运行时会使用独立的任务id
     iteration_count: int  # 迭代次数，默认为0
     history: list[AnyMessage]  # 短期记忆(历史记录)
     long_term_memory: str  # 长期记忆

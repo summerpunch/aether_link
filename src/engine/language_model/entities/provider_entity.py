@@ -5,7 +5,7 @@ import yaml
 from pydantic import BaseModel, Field, root_validator
 
 from src.core.exception.exception import FailException, NotFoundException
-from src.lib.helper import dynamic_import
+from src.core.lib.helper import dynamic_import
 from .default_model_parameter_template import DEFAULT_MODEL_PARAMETER_TEMPLATE
 from .model_entity import ModelType, ModelEntity, BaseLanguageModel
 

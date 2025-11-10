@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from fastapi import HTTPException
 from sqlalchemy import asc, desc
 
+
 class BaseService:
     """基础服务，完善数据库的基础增删改查功能，简化代码"""
     database_manager: DatabaseManager
@@ -19,21 +20,32 @@ class BaseService:
             self.database_manager.session.expunge(model_instance)
         return model_instance
 
-    def delete(self, model_instance: Any) -> Any:
-        """根据传递的模型实例删除数据库记录"""
-        with self.database_manager.auto_commit():
-            self.database_manager.session.delete(model_instance)
-        return model_instance
+    def delete_by_filter(
+            self,
+            model: Any,
+            filters: dict
+    ) -> int:
+        """
+        根据指定条件删除记录（支持批量删除）
 
-    def update(self, model_instance: Any, **kwargs) -> Any:
-        """根据传递的模型实例+键值对信息更新数据库记录"""
-        with self.database_manager.auto_commit():
-            for field, value in kwargs.items():
-                if hasattr(model_instance, field):
-                    setattr(model_instance, field, value)
-                else:
-                    raise FailException("更新数据失败")
-        return model_instance
+        Args:
+            model: SQLAlchemy 模型类
+            filters: 查询条件（字典形式，如 {"status": "inactive"}）
+        Returns:
+            删除的记录数
+        """
+        try:
+            with self.database_manager.auto_commit():
+                query: Query = self.database_manager.session.query(model)
+                for field, value in filters.items():
+                    if hasattr(model, field):
+                        query = query.filter(getattr(model, field) == value)
+                    else:
+                        raise HTTPException(status_code=400, detail=f"无效字段: {field}")
+                deleted_count = query.delete(synchronize_session='fetch')
+                return deleted_count
+        except SQLAlchemyError as e:
+            raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
 
     def update_by_filter(
             self,
@@ -69,7 +81,7 @@ class BaseService:
         with self.database_manager.get_session() as session:
             return session.query(model).get(primary_key)
 
-    def filter_by_fields(self, model: Any, filters: Dict[str, Any]) -> Optional[Any]:
+    def get_by_fields(self, model: Any, filters: Dict[str, Any]) -> Optional[Any]:
         """
         根据字段字典查询唯一数据，例如：{"email": "test@example.com", "status": "active"}
         """
@@ -81,11 +93,11 @@ class BaseService:
                 query = query.filter(getattr(model, field_name) == value)
             return query.one_or_none()
 
-    def filter_by_fields_with_values(
+    def get_list_by_fields(
             self,
             model: Any,
-            filters: Dict[str, Union[Any, List[Any]]],
-            order_by: Optional[List[Dict[str, Any]]] = None,
+            filters: dict,
+            order_by: Optional[list] = None
     ) -> List[Any]:
         """
         根据字段（支持单值/多值/None）查询数据，并支持明确的 asc/desc 排序结构
@@ -98,35 +110,50 @@ class BaseService:
         Returns:
             匹配的记录列表
         """
+        return self.get_page_by_fields(model=model, filters=filters, order_by=order_by)
+
+    def get_page_by_fields(
+            self,
+            model: Any,
+            filters: dict,
+            limit: Optional[int] = None,
+            offset: Optional[int] = None,
+            order_by: Optional[list] = None
+    ) -> List[Any]:
+        """
+        根据条件查询数据（支持分页和排序）
+
+        Args:
+            model: SQLAlchemy 模型类
+            filters: 查询条件（字典形式）
+            limit: 限制返回数量
+            offset: 偏移量
+            order_by: 排序条件列表
+        Returns:
+            查询结果列表
+        """
         try:
             with self.database_manager.get_session() as session:
-                query: Query = session.query(model)
-
-                # 构造过滤条件
+                query = session.query(model)
                 for field, value in filters.items():
                     column = getattr(model, field, None)
                     if column is None:
                         raise ValueError(f"Model {model.__name__} has no field '{field}'")
-
                     if isinstance(value, list):
                         query = query.filter(column.in_(value))
                     elif value is None:
                         query = query.filter(column.is_(None))
                     elif isinstance(value, bool):
-                        # 用于布尔字段（如 is_active）
                         query = query.filter(column.is_(value))
                     else:
                         query = query.filter(column == value)
-
                 if order_by:
-                    for order_dict in order_by:
-                        field_name, direction = next(iter(order_dict.items()))
-                        column = getattr(model, field_name)
-                        direction = (direction or "asc").lower()
-                        if direction == "desc":
-                            query = query.order_by(desc(column))
-                        else:
-                            query = query.order_by(asc(column))
+                    for order_clause in order_by:
+                        query = query.order_by(order_clause)
+                if offset:
+                    query = query.offset(offset)
+                if limit:
+                    query = query.limit(limit)
                 return query.all()
         except SQLAlchemyError as e:
             raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")

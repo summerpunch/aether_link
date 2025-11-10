@@ -1,33 +1,37 @@
-import json
+import asyncio
 import logging
-import uuid
-from typing import Any, Generator
+from typing import Any, Optional
+from ag_ui.core import EventType
 from dotenv import load_dotenv
-
 from src.core.exception.exception import NotFoundException, ForbiddenException, ValidateErrorException, FailException
-from src.engine.agent.agents import FunctionCallAgent, ReACTAgent
+from src.engine.agent.agents import AgentNative
 from src.engine.agent.entities.agent_entity import AgentConfig
-from src.engine.agent.entities.queue_entity import QueueEvent
 from src.engine.conversation_entity import InvokeFrom
-from src.engine.language_model.entities.model_entity import ModelFeature, ModelParameterType
-from src.engine.memory import TokenBufferMemory
+from src.engine.language_model.entities.model_entity import ModelParameterType
 from src.engine.tools.builtin.provider_manager import BuiltinProviderManager
 from src.enums.app_enum import AppStatus, AppConfigType, DEFAULT_APP_CONFIG
-from src.enums.workflow_enum import MessageStatus, WorkflowStatus
-from src.schema.app_schema import CreateAppReq, ChatReq
+from src.enums.workflow_enum import WorkflowStatus, WorkflowResultStatus
+from src.schema.app_schema import CreateAppReq, ChatReq, ChatStreamReq
 from src.service.language_model_service import LanguageModelService
-from src.store.model import Message, App, AppConfigVersion, ApiTool, Workflow, Conversation
+from src.store.model import App, AppConfigVersion, ApiTool, Workflow
 from injector import inject
-from src.lib.helper import get_value_type
+from src.core.lib.helper import get_value_type
 from src.service.base_service import BaseService
 from dataclasses import dataclass
 from src.store.database_manager import DatabaseManager
 from src.service.app_config_service import AppConfigService
-from src.service.chat_service import ChatService
+from src.service.conversation_service import ConversationService
+from src.core.task_manager import task_manager
+from src.utils import helper_util
+from src.service import stream_service
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+RUN_STARTED_PATTERN = rf'"type"\s*:\s*"{EventType.RUN_STARTED.name}"'
+
+RUN_FINISHED_PATTERN = rf'"type"\s*:\s*"{EventType.RUN_FINISHED.name}"'
 
 
 @inject
@@ -35,76 +39,49 @@ logger = logging.getLogger(__name__)
 class AppService(BaseService):
     database_manager: DatabaseManager
     app_config_service: AppConfigService
+    conversation_service: ConversationService
     language_model_service: LanguageModelService
-    chat_service: ChatService
     builtin_provider_manager: BuiltinProviderManager
 
-    def chat(self, req: ChatReq, account: str) -> Generator:
+    @staticmethod
+    async def stream(req: ChatStreamReq,
+                     stream_read_message_id: Optional[str] = None):
+        if not req.agent_run_id:
+            stream_read_message_id = "0-0"
+        thread_id = req.thread_id
+        agent_run_id = req.agent_run_id
+        try:
+            stop_event = asyncio.Event()
+            while True:
+                if stop_event.is_set():
+                    break
+                if await req.is_disconnected():
+                    logger.info(f"thread_id:{thread_id} agent_run_id:{agent_run_id}, Client disconnected, stopping SSE")
+                    raise asyncio.CancelledError(f"thread_id:{thread_id} agent_run_id:{agent_run_id}, 会话主动中断")
+                async for msg_id, fields in stream_service.load_event_sse(agent_run_id, stream_read_message_id):
+                    stream_read_message_id = msg_id
+                    value = fields.get("value")
+                    if value in WorkflowResultStatus.SUCCEEDED:
+                        break
+                    yield value
+        except asyncio.CancelledError as ce:
+            logger.info(f"thread_id:{thread_id}, SSE event generator was cancelled {ce}")
+            raise
+        except Exception as e:
+            logger.error(f"thread_id:{thread_id}, Error in SSE event generator: {e}")
+            raise
+        finally:
+            logger.info(f"thread_id:{thread_id}, SSE event generator finished")
+
+    async def chat(self, req: ChatReq, account: str):
         """根据传递的应用id+提问query向特定的应用发起会话调试"""
-        # 1.获取应用信息并校验权限
 
         app = self.get_app(req.app_id, account)
 
-        # 2.获取应用的最新草稿配置信息
         draft_app_config = self.app_config_service.get_draft_app_config(req.app_id)
 
-        # 3.获取当前应用的调试会话信息
-
-        conversation_id = None
-        debug_conversation = None
-        if app.debug_conversation_id is not None:
-            debug_conversation = self.database_manager.session.query(Conversation).filter(
-                Conversation.id == app.debug_conversation_id,
-                Conversation.invoke_from == InvokeFrom.DEBUGGER,
-            ).one_or_none()
-            conversation_id = debug_conversation.id
-
-        # 2.检测数据是否存在，如果不存在则创建
-        if not app.debug_conversation_id or not debug_conversation:
-            debug_conversation = Conversation(
-                app_id=app.id,
-                name="New Conversation",
-                invoke_from=InvokeFrom.DEBUGGER,
-                created_by=account,
-            )
-            debug_conversation = self.create(Conversation, **{**debug_conversation.to_dict()})
-            conversation_id = debug_conversation.id
-            self.update_by_filter(
-                model=App,
-                filters={
-                    "id": f"{app.id}",
-                },
-                update_fields={
-                    "debug_conversation_id": conversation_id
-                }
-            )
-
-        # 4.新建一条消息记录
-        message = self.create(
-            Message,
-            app_id=req.app_id,
-            conversation_id=conversation_id,
-            invoke_from=InvokeFrom.DEBUGGER,
-            created_by=account,
-            query=req.query,
-            image_urls=req.image_urls,
-            status=MessageStatus.NORMAL,
-        )
-
-        # 5.从语言模型管理器中加载大语言模型
         llm = self.language_model_service.load_language_model(draft_app_config.get("model_config", {}))
 
-        # 6.实例化TokenBufferMemory用于提取短期记忆
-        token_buffer_memory = TokenBufferMemory(
-            database_manager=self.database_manager,
-            conversation_id=conversation_id,
-            model_instance=llm,
-        )
-        history = token_buffer_memory.get_history_prompt_messages(
-            message_limit=draft_app_config["dialog_round"],
-        )
-
-        # 7.将草稿配置中的tools转换成LangChain工具
         tools = self.app_config_service.get_langchain_tools_by_tools_config(draft_app_config["tools"])
 
         # 10.检测是否关联工作流，如果关联了工作流则将工作流构建成工具添加到tools中
@@ -114,9 +91,7 @@ class AppService(BaseService):
             )
             tools.extend(workflow_tools)
 
-        # 10.根据LLM是否支持tool_call决定使用不同的Agent
-        agent_class = FunctionCallAgent if ModelFeature.TOOL_CALL in llm.features else ReACTAgent
-        agent = agent_class(
+        agent = AgentNative(
             llm=llm,
             agent_config=AgentConfig(
                 user_id=account,
@@ -127,72 +102,21 @@ class AppService(BaseService):
                 review_config=draft_app_config["review_config"],
             ),
         )
-
-        agent_thoughts = {}
-        for agent_thought in agent.stream({
-            "messages": [llm.convert_to_human_message(req.query, req.image_urls)],
-            "history": history
-            # "long_term_memory": debug_conversation.summary,
-        }):
-            # 11.提取thought以及answer
-            event_id = str(agent_thought.id)
-
-            # 12.将数据填充到agent_thought，便于存储到数据库服务中
-            if agent_thought.event != QueueEvent.PING:
-                # 13.除了agent_message数据为叠加，其他均为覆盖
-                if agent_thought.event == QueueEvent.AGENT_MESSAGE:
-                    if event_id not in agent_thoughts:
-                        # 14.初始化智能体消息事件
-                        agent_thoughts[event_id] = agent_thought
-                    else:
-                        # 15.叠加智能体消息
-                        agent_thoughts[event_id] = agent_thoughts[event_id].model_copy(update={
-                            "thought": agent_thoughts[event_id].thought + agent_thought.thought,
-                            # 消息相关数据
-                            "message": agent_thought.message,
-                            "message_token_count": agent_thought.message_token_count,
-                            "message_unit_price": agent_thought.message_unit_price,
-                            "message_price_unit": agent_thought.message_price_unit,
-                            # 答案相关数据
-                            "answer": agent_thoughts[event_id].answer + agent_thought.answer,
-                            "answer_token_count": agent_thought.answer_token_count,
-                            "answer_unit_price": agent_thought.answer_unit_price,
-                            "answer_price_unit": agent_thought.answer_price_unit,
-                            # Agent推理统计相关
-                            "total_token_count": agent_thought.total_token_count,
-                            "total_price": agent_thought.total_price,
-                            "latency": agent_thought.latency,
-                        })
-                else:
-                    # 16.处理其他类型事件的消息
-                    agent_thoughts[event_id] = agent_thought
-            data = {
-                **agent_thought.model_dump(include={
-                    "event", "thought", "observation", "tool", "tool_input", "answer",
-                    "total_token_count", "total_price", "latency",
-                }),
-                "id": event_id,
-                "conversation_id": str("111"),
-                "message_id": str(message.id),
-                "task_id": str(agent_thought.task_id),
+        agent_run_id = await self.conversation_service.create_agent_run_id(req.thread_id, account)
+        config = {
+            "agent_run_id": agent_run_id,
+            "callbacks": [],
+            "configurable": {
+                "thread_id": req.thread_id,
             }
-            print(data)
-            yield f"event: {agent_thought.event}\ndata:{json.dumps(data)}\n\n"
+        }
+        await task_manager.create_task(agent_run_id, agent.run_agent(input=req.query, config=config))
+        return agent_run_id
 
-        # 22.将消息以及推理过程添加到数据库
-        self.chat_service.save_agent_thoughts(
-            account_id=account,
-            app_id=app.id,
-            app_config=draft_app_config,
-            conversation_id=conversation_id,
-            message_id=message.id,
-            agent_thoughts=[agent_thought for agent_thought in agent_thoughts.values()],
-        )
-
-    async def create_app(self, req: CreateAppReq, account: str) -> App:
+    def create_app(self, req: CreateAppReq, account: str) -> App:
         """创建Agent应用服务"""
-        app_id = str(uuid.uuid4())
-        app_config_id = str(uuid.uuid4())
+        app_id = helper_util.generate_business_id()
+        app_config_id = helper_util.generate_business_id()
         app = App(
             id=app_id,
             account_id=account,
@@ -315,7 +239,8 @@ class AppService(BaseService):
                     parameter_value = parameter.default
 
                 # 3.12 参数类型为int/float，如果存在min/max时候需要校验
-                if parameter.type in [ModelParameterType.INT, ModelParameterType.FLOAT] and parameter_value is not None:
+                if parameter.type in [ModelParameterType.INT,
+                                      ModelParameterType.FLOAT] and parameter_value is not None:
                     # 3.13 校验数值的min/max
                     if (
                             (parameter.min and parameter_value < parameter.min)
@@ -424,7 +349,8 @@ class AppService(BaseService):
                 Workflow.status == WorkflowStatus.PUBLISHED,
             ).all()
             workflow_sets = set([str(workflow_record.id) for workflow_record in workflow_records])
-            draft_app_config["workflows"] = [workflow_id for workflow_id in workflows if workflow_id in workflow_sets]
+            draft_app_config["workflows"] = [workflow_id for workflow_id in workflows if
+                                             workflow_id in workflow_sets]
 
         # 8.校验datasets知识库列表
         # if "datasets" in draft_app_config:
@@ -621,8 +547,3 @@ class AppService(BaseService):
             raise ForbiddenException("当前账号无权限访问该应用，请核实后尝试")
 
         return app
-
-    # def get_draft_app_config(self, app_id: str) -> dict[str, Any]:
-    #     """根据传递的应用id，获取指定的应用草稿配置信息"""
-    #     app = self.get_app(app_id)
-    #     return self.app_config_service.get_draft_app_config(app)

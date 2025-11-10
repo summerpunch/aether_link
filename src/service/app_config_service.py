@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 from typing import Any, Union
 from uuid import UUID
@@ -16,9 +15,9 @@ from ..engine.workflow.workflow_entity import WorkflowConfig
 from ..enums.app_enum import DEFAULT_APP_CONFIG, AppConfigType
 from ..enums.workflow_enum import WorkflowStatus
 from ..store.database_manager import DatabaseManager
-from ..store.model import App, ApiTool, Workflow, AppConfig, AppConfigVersion
+from ..store.model import ApiTool, Workflow, AppConfig, AppConfigVersion
 
-from src.lib.helper import datetime_to_timestamp, get_value_type
+from src.core.lib.helper import datetime_to_timestamp, get_value_type
 
 
 @inject
@@ -29,7 +28,6 @@ class AppConfigService(BaseService):
     api_provider_manager: ApiProviderManager
     builtin_provider_manager: BuiltinProviderManager
     language_model_manager: LanguageModelManager
-
 
     def get_langchain_tools_by_workflow_ids(self, workflow_ids: list[UUID]) -> list[BaseTool]:
         """根据传递的工作流配置列表获取langchain工具列表"""
@@ -95,7 +93,6 @@ class AppConfigService(BaseService):
 
     def get_draft_app_config(self, app_id: str) -> dict[str, Any]:
         """根据传递的应用获取该应用的草稿配置"""
-        # 1.提取应用的草稿配置
 
         draft_app_config = self.database_manager.session.query(AppConfigVersion).filter(
             AppConfigVersion.app_id == app_id,
@@ -104,14 +101,12 @@ class AppConfigService(BaseService):
 
         # 2.检测配置是否存在，如果不存在则创建一个默认值
         if not draft_app_config:
-            draft_app_config = AppConfigVersion(
-                app_id=app_id,
-                version=0,
-                config_type=AppConfigType.DRAFT,
-                **DEFAULT_APP_CONFIG
-            )
-            self.database_manager.session.add(draft_app_config)
-            self.database_manager.session.commit()
+            draft_app_config = self.create(AppConfigVersion, **{
+                **DEFAULT_APP_CONFIG,
+                "app_id": app_id,
+                "version": 0,
+                "config_type": AppConfigType.DRAFT,
+            })
 
         # 2.校验model_config信息，如果使用了不存在的提供者或者模型，则使用默认值(宽松校验)
         validate_model_config = self._process_and_validate_model_config(draft_app_config.model_config)

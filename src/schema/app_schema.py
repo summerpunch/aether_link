@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel, Field
 
 
@@ -26,5 +25,10 @@ class CreateAppReq(BaseModel):
 class ChatReq(BaseModel):
     """应用调试会话请求结构体"""
     app_id: str = Field(..., description="app_id")
+    thread_id: str = Field(..., description="thread_id")
     query: str = Field(..., description="用户提问内容")
-    image_urls: list = Field(default_factory=list, description="用户提问内容")
+
+
+class ChatStreamReq(BaseModel):
+    thread_id: str = Field(..., description="thread_id")
+    agent_run_id: str = Field(..., description="agent_run_id")

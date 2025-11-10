@@ -2,7 +2,7 @@ import os.path
 from typing import Any
 import yaml
 from pydantic import BaseModel, Field
-from src.lib.helper import dynamic_import
+from src.core.lib.helper import dynamic_import
 from src.engine.tools.builtin.entities.tool_entity import ToolEntity
 
 

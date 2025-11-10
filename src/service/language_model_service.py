@@ -8,7 +8,7 @@ from injector import inject
 from src.engine.language_model import LanguageModelManager
 from src.engine.language_model.entities.model_entity import BaseLanguageModel
 from src.core.exception.exception import NotFoundException
-from src.lib.helper import convert_model_to_dict
+from src.core.lib.helper import convert_model_to_dict
 from .base_service import BaseService
 
 

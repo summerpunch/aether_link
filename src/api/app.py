@@ -1,11 +1,13 @@
 from contextlib import asynccontextmanager, AsyncExitStack
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from src.api.conversation_api import router as conversation_api
 from src.api.apps_api import router as apps_api
 from src.api.tools_api import router as tools_api
 from src.api.workflow_api import router as workflow_api
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ app.add_middleware(
 app.include_router(apps_api, prefix="/api")
 app.include_router(tools_api, prefix="/api")
 app.include_router(workflow_api, prefix="/api")
+app.include_router(conversation_api, prefix="/api")
 
 
 @app.get("/api/health")

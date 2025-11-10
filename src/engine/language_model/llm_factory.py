@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AgentConfig:
+class AgentModelConfig:
     model: Optional[str] = None
     temperature: Optional[float] = 0.0
     base_url: Optional[str] = None
@@ -48,17 +48,17 @@ class LLMFactory:
         self._llm_cache: Dict[str, BaseLanguageModel] = {}
 
     @staticmethod
-    def get_cached_key(config: AgentConfig) -> str:
+    def get_cached_key(config: AgentModelConfig) -> str:
         return f"{config.get_base_url()}_{config.get_model()}_{config.get_temperature()}"
 
-    def get_cached_llm(self, config: AgentConfig) -> Optional[BaseLanguageModel]:
+    def get_cached_llm(self, config: AgentModelConfig) -> Optional[BaseLanguageModel]:
         cache_key = self.get_cached_key(config)
         if cache_key in self._llm_cache:
             logger.info(f"使用缓存的 LLM: {cache_key}")
             return self._llm_cache[cache_key]
         return None
 
-    def _cached_llm(self, config: AgentConfig, llm: BaseLanguageModel) -> None:
+    def _cached_llm(self, config: AgentModelConfig, llm: BaseLanguageModel) -> None:
         cache_key = self.get_cached_key(config)
         self._llm_cache[cache_key] = llm
         logger.info(f"缓存 LLM: {cache_key}")
@@ -88,9 +88,10 @@ class LLMFactory:
         name = model_name.lower()
         return "qwen" in name
 
-    def default_llm(self, config: Optional[AgentConfig] = None) -> BaseLanguageModel:
+    @staticmethod
+    def default(self, config: Optional[AgentModelConfig] = None) -> BaseLanguageModel:
         if config is None:
-            config = AgentConfig()
+            config = AgentModelConfig()
         model = config.get_model()
         base_url = config.get_base_url()
         api_key = config.get_api_key()
@@ -105,7 +106,7 @@ class LLMFactory:
             http_async_client=httpx.AsyncClient(verify=False)
         )
 
-    def factory(self, config: AgentConfig) -> BaseLanguageModel:
+    def factory(self, config: AgentModelConfig) -> BaseLanguageModel:
         cached_llm = self.get_cached_llm(config)
         if cached_llm:
             return cached_llm
